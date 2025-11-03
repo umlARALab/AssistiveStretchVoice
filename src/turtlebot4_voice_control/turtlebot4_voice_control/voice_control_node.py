@@ -1,32 +1,42 @@
+#ROS2 CORE
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
+from contextlib import contextmanager
+
+#NAVIGATION AND MAPPING
 from geometry_msgs.msg import Twist
+from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import PoseWithCovarianceStamped
+
+#SPEECH AND AUDIO
 import speech_recognition as sr
+import pyaudio
 import pyttsx3
-import threading
+from gtts import gTTS
+from io import BytesIO
+from pydub import AudioSegment
+from pydub.playback import play
+import simpleaudio as sa
+from openai import OpenAI
+import pygame
+
+#PYTHON CORE
 import time
 import os
-import pyaudio
 import sys
-from contextlib import contextmanager
-from nav2_msgs.action import NavigateToPose
-from rclpy.action import ActionClient
 import numpy as np
+import math
+from math import sqrt
+import threading
+from threading import Lock
 from std_msgs.msg import String
 from queue import Queue
-from threading import Lock
+
+#VISION
 import cv2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-import math
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from math import sqrt
-from gtts import gTTS
-import pygame
-import tempfile
-from openai import OpenAI
-import playsound
-import os
 
 @contextmanager
 def ignore_stderr():
@@ -98,6 +108,7 @@ class VoiceControlNode(Node):
         self.current_goal_handle = None
         self.last_position = (0.0, 0.0)
         self.destination = None
+        self.prompt = """You are a voice request interpreter. Your job is to interpret any input as one of these commands: go, wait. And to one of these locations: kitchen, livingroom, bedroom. Always format your response like this: command1,location1 then command2,location2 then command3,location3 then etc. Always assume: - A warm blanket is in the bedroom and needs to get to the livingroom. - A dirty plate is in the livingroom and needs to get to the kitchen. - A full cup of coffee is in the kitchen and needs to get to the bedroom. Avoid repeating locations unnecessarily."""
 
         #Preset Locations
         self.kitchen = [-0.025, 2.2]
@@ -106,8 +117,8 @@ class VoiceControlNode(Node):
 
         #Sound engine
         pygame.mixer.init()
-        self.music_file = '/home/hello-robot/Downloads/01 - The Pink Panther Theme.mp3'  
-        self.waiting_music = '/home/hello-robot/Downloads/Waiting.mp3'
+        # self.music_file = '/home/hello-robot/Downloads/01 - The Pink Panther Theme.mp3'  
+        # self.waiting_music = '/home/hello-robot/Downloads/Waiting.mp3'
         self.music_volume = 0.5  
         self.speaking = False
 
@@ -160,21 +171,39 @@ class VoiceControlNode(Node):
     #Voice input and processing
     def listen_for_commands(self):
         with self.microphone as source:
-            self.get_logger().info("Listening for commands...")
-            self.recognizer.adjust_for_ambient_noise(source)
+            self.get_logger().info("Calibrating microphone (0.8s)... ")
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+            self.get_logger().info("Listener Thread Listening... ")
+            
+            ce = 0
+
             while True:
                 if self.speaking:
                     self.get_logger().info("Currently speaking.")
-                else:
-                    audio = self.recognizer.listen(source)
-                    try:
-                        command = self.recognizer.recognize_google(audio).lower()
+                    time.sleep(0.5)
+                    continue
+                
+                try:
+                    audio = self.recognizer.listen(source, timeout=2.5, phrase_time_limit=6.0)
+                except sr.WaitTimeoutError:
+                    continue
+                
+                try:
+                    command = self.recognizer.recognize_google(audio).lower().strip()
+                    
+                    if command:
                         self.get_logger().info(f"Recognized command: {command}")
                         self.handle_command(command)
-                    except sr.UnknownValueError:
-                        self.get_logger().info("Could not understand the command.")
-                    except sr.RequestError as e:
-                        self.get_logger().error(f"Speech recognition error: {e}")
+
+                except sr.UnknownValueError:
+                    self.get_logger().info("Could not understand the command.")
+
+                except sr.RequestError as e:
+                    self.get_logger().error(f"Speech recognition error: {e}")
+                    ce += 1
+                    time.sleep(0.5)
+
+                time.sleep(0.01)
 
     #Command processing and handling
     def handle_command(self, command):
@@ -208,21 +237,23 @@ class VoiceControlNode(Node):
     #Voice command interpretation
     def command_interpretation(self, command):
         completion = self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo-1106",
             messages=[
-                {"role": "developer",
-                  "content": "Your job is to interpret any input as one of these commands: go,wait,follow . And to one of these locations: kitchen,livingroom,bedroom . Always format your response like this (the number of necessary command/locations may wary and avoid repeating locations): command1,location1 then command2,location2 then command3,location3 then etc. Assume the blanket is in the bedroom and needs to get to the livingroom, the dish is in the livingroom and needs to get to the kitchen, the cup of coffe in the kitchen and needs to get to the bedroom. Avoid using follow at all costs!"},
+                {"role": "system",
+                  "content": self.prompt},
                 {
                     "role": "user",
                     "content": command
                 }
-            ])
+            ],
+            temperature=0.0,
+        )
         print(completion.choices[0].message.content)
         return completion.choices[0].message.content
 
     #Universal halt to all activity and queue clear
     def stop_all_tasks(self):
-        self.fade_out_and_stop_music()
+        # self.fade_out_and_stop_music()
         self.task_queue.queue.clear()
         self.is_navigating = False
         self.current_task = None
@@ -237,7 +268,8 @@ class VoiceControlNode(Node):
     #Addition of current task to the task queue
     def add_task_to_queue(self, task):
         self.task_queue.put(task)
-        self.speak("Task added to the queue.")
+        print(list(self.task_queue.queue))
+        # self.speak("Task added to the queue.")
 
     #Command execution off the top of the queue
     def process_task_queue(self):
@@ -249,14 +281,16 @@ class VoiceControlNode(Node):
                 self.destination = task_dest
                 if task_type == "go":
                     self.navigate_to(getattr(self, task_dest, "Room not found")[0], getattr(self, task_dest, "Room not found")[1])
+                    self.speak("Going to the " + task_dest)
                 elif task_type == "wait":
                     self.navigate_to(getattr(self, task_dest, "Room not found")[0], getattr(self, task_dest, "Room not found")[1])
+                    self.speak("Going to wait at the " + task_dest)
                 elif task_type == "follow":
                     self.follow_to(getattr(self, task_dest, "Room not found")[0], getattr(self, task_dest, "Room not found")[1])
 
     #Base navigation function for map navigation after map load
     def navigate_to(self, x, y, theta=0.0):
-        self.play_music_with_fade_in(self.music_file)
+        # self.play_music_with_fade_in(self.music_file)
         self.is_navigating = True
 
         goal_msg = NavigateToPose.Goal()
@@ -269,10 +303,12 @@ class VoiceControlNode(Node):
 
         self.nav_client.send_goal_async(goal_msg).add_done_callback(self.goal_response_callback)
 
-    #Base follow function with human detection and distance calculation (THIS IS CURRENTLY DISABED)
+#THE BELOW SECTION IS USED FOR PERSON FOLLOWING WHICH IS CURRENTLY DISABLED.
+
+    #Base follow function with human detection and distance calculation
     # def follow_to(self, x, y):
     #     self.is_navigating = True
-    #     self.play_music_with_fade_in(self.music_file)
+    #     # self.play_music_with_fade_in(self.music_file)
     #     self.get_logger().info(f"Following to destination at ({x}, {y})")
 
     #     follow_goal_threshold = 0.25  
@@ -284,7 +320,7 @@ class VoiceControlNode(Node):
 
     #     while self.is_navigating:
     #         if time.time() - start_time > timeout:
-    #             self.fade_out_and_stop_music()
+    #             # self.fade_out_and_stop_music()
     #             self.get_logger().info("Timeout reached while following. Stopping follow.")
     #             self.speak(f"I could not reach the {self.destination} in time.")
     #             self.is_navigating = False
@@ -294,7 +330,7 @@ class VoiceControlNode(Node):
     #             break
 
     #         if self.reached_goal(x, y):
-    #             self.fade_out_and_stop_music()
+    #             # self.fade_out_and_stop_music()
     #             self.get_logger().info(f"Reached the destination at ({x}, {y}) while following.")
     #             self.speak(f"I have reached the {self.destination}.")
     #             self.is_navigating = False
@@ -314,10 +350,10 @@ class VoiceControlNode(Node):
 
     #     self.goal_threshold = original_goal_threshold
 
-    #Perofrm idle rotation in a 90 degree arch to locate person (THIS IS CURRENTLY DISABED)
+    # #Perofrm idle rotation in a 90 degree arch to locate person
     # def perform_camera_scan(self):
     #     self.speak("Lost track of person, performing scan.")
-    #     self.play_music_with_fade_in(self.waiting_music)
+    #     # self.play_music_with_fade_in(self.waiting_music)
     #     scan_speed = 0.2
     #     scan_range = math.pi / 4  
     #     scan_duration = scan_range / scan_speed 
@@ -357,7 +393,7 @@ class VoiceControlNode(Node):
     #         person_detected, person_position = self.detect_person()
     #         if person_detected:
     #             self.get_logger().info("Person detected during scan. Aligning camera forward.")
-    #             self.fade_out_and_stop_music()
+    #             # self.fade_out_and_stop_music()
     #             self.twist.angular.z = 0.0
     #             self.publisher_.publish(self.twist)
     #             return
@@ -367,7 +403,7 @@ class VoiceControlNode(Node):
     #     self.twist.angular.z = 0.0
     #     self.publisher_.publish(self.twist)
 
-    # #OpenCV upper body person detection (THIS IS CURRENTLY DISABED)
+    #OpenCV upper body person detection 
     # def detect_person(self):
     #     if self.current_frame is None:
     #         return False, None
@@ -401,7 +437,7 @@ class VoiceControlNode(Node):
 
     #     return False, None
 
-    #Follow person based on frame information, goal is to increase bounding box size of the detected person to a certain value (THIS IS CURRENTLY DISABED)
+    #Follow person based on frame information, goal is to increase bounding box size of the detected person to a certain value
     # def adjust_velocity_to_follow(self, person_position):
     #     desired_box_size = 900  
     #     box_width = person_position["width"]
@@ -426,7 +462,7 @@ class VoiceControlNode(Node):
 
     #Movement halt
     def stop_movement(self):
-        self.fade_out_and_stop_music()
+        # self.fade_out_and_stop_music()
         self.twist.linear.x = 0.0
         self.twist.angular.z = 0.0
         self.publisher_.publish(self.twist)
@@ -489,15 +525,15 @@ class VoiceControlNode(Node):
     def get_result_callback(self, future):
         result = future.result()
         if result is not None and hasattr(result, 'status') and result.status == 4:
-            self.fade_out_and_stop_music()
+            # self.fade_out_and_stop_music()
             self.get_logger().info('Navigation goal succeeded!')
             self.speak(f"I have reached the {self.destination}.")
             if self.current_task == "wait":
-                self.play_music_with_fade_in(self.waiting_music)
-                self.speak("Waiting for 15 seconds")
-                time.sleep(15)
+                # self.play_music_with_fade_in(self.waiting_music)
+                self.speak("Waiting for 5 seconds")
+                time.sleep(5)
                 self.get_logger().info("Finished waiting at the destination.")
-                self.fade_out_and_stop_music()
+                # self.fade_out_and_stop_music()
                 self.speak(f"Finished waiting.")
             if self.task_queue.empty():
                 self.speak("Any further commands?")
@@ -518,12 +554,28 @@ class VoiceControlNode(Node):
     #Audio feedback enabler
     def text_to_speech(self, text):
         try:
+            mp3_fp = BytesIO()
             tts = gTTS(text)
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
-                temp_audio_path = temp_audio_file.name
-                tts.save(temp_audio_path)
-            playsound.playsound(temp_audio_path)
-            os.remove(temp_audio_path)
+            tts.write_to_fp(mp3_fp)
+            mp3_fp.seek(0)
+
+            audio = AudioSegment.from_file(mp3_fp, format="mp3")
+            
+            audio = audio.set_channels(1).set_frame_rate(22050).set_sample_width(2)
+            raw = audio.raw_data
+
+            with threading.Lock():
+                play = sa.play_buffer(raw, num_channels=1, bytes_per_sample=2, sample_rate=22050)
+                play.wait_done()
+
+            # del audio
+            # mp3_fp.close()
+
+            # with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
+            #     temp_audio_path = temp_audio_file.name
+            #     tts.save(temp_audio_path)
+            # playsound.playsound(temp_audio_path)
+            # os.remove(temp_audio_path)
 
         except Exception as e:
             self.get_logger().error(f'Error during TTS or playback: {e}')
@@ -541,4 +593,5 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
 
