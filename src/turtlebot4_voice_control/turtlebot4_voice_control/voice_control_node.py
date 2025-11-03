@@ -269,160 +269,160 @@ class VoiceControlNode(Node):
 
         self.nav_client.send_goal_async(goal_msg).add_done_callback(self.goal_response_callback)
 
-    #Base follow function with human detection and distance calculation
-    def follow_to(self, x, y):
-        self.is_navigating = True
-        self.play_music_with_fade_in(self.music_file)
-        self.get_logger().info(f"Following to destination at ({x}, {y})")
+    #Base follow function with human detection and distance calculation (THIS IS CURRENTLY DISABED)
+    # def follow_to(self, x, y):
+    #     self.is_navigating = True
+    #     self.play_music_with_fade_in(self.music_file)
+    #     self.get_logger().info(f"Following to destination at ({x}, {y})")
 
-        follow_goal_threshold = 0.25  
-        original_goal_threshold = self.goal_threshold
-        self.goal_threshold = follow_goal_threshold
+    #     follow_goal_threshold = 0.25  
+    #     original_goal_threshold = self.goal_threshold
+    #     self.goal_threshold = follow_goal_threshold
 
-        timeout = 30  
-        start_time = time.time()
+    #     timeout = 30  
+    #     start_time = time.time()
 
-        while self.is_navigating:
-            if time.time() - start_time > timeout:
-                self.fade_out_and_stop_music()
-                self.get_logger().info("Timeout reached while following. Stopping follow.")
-                self.speak(f"I could not reach the {self.destination} in time.")
-                self.is_navigating = False
-                self.stop_movement()
-                if self.task_queue.empty():
-                    self.speak("Any further commands?")
-                break
+    #     while self.is_navigating:
+    #         if time.time() - start_time > timeout:
+    #             self.fade_out_and_stop_music()
+    #             self.get_logger().info("Timeout reached while following. Stopping follow.")
+    #             self.speak(f"I could not reach the {self.destination} in time.")
+    #             self.is_navigating = False
+    #             self.stop_movement()
+    #             if self.task_queue.empty():
+    #                 self.speak("Any further commands?")
+    #             break
 
-            if self.reached_goal(x, y):
-                self.fade_out_and_stop_music()
-                self.get_logger().info(f"Reached the destination at ({x}, {y}) while following.")
-                self.speak(f"I have reached the {self.destination}.")
-                self.is_navigating = False
-                self.stop_movement()
-                break
+    #         if self.reached_goal(x, y):
+    #             self.fade_out_and_stop_music()
+    #             self.get_logger().info(f"Reached the destination at ({x}, {y}) while following.")
+    #             self.speak(f"I have reached the {self.destination}.")
+    #             self.is_navigating = False
+    #             self.stop_movement()
+    #             break
 
-            person_detected, person_position = self.detect_person()
-            if person_detected:
-                self.adjust_velocity_to_follow(person_position)
-                self.twist.angular.z = 0.0  
-            else:
-                self.get_logger().info("Lost track of the person. Stopping and scanning.")
-                self.stop_movement()
-                self.perform_camera_scan() 
+    #         person_detected, person_position = self.detect_person()
+    #         if person_detected:
+    #             self.adjust_velocity_to_follow(person_position)
+    #             self.twist.angular.z = 0.0  
+    #         else:
+    #             self.get_logger().info("Lost track of the person. Stopping and scanning.")
+    #             self.stop_movement()
+    #             self.perform_camera_scan() 
 
-            time.sleep(0.1)
+    #         time.sleep(0.1)
 
-        self.goal_threshold = original_goal_threshold
+    #     self.goal_threshold = original_goal_threshold
 
-    #Perofrm idle rotation in a 90 degree arch to locate person
-    def perform_camera_scan(self):
-        self.speak("Lost track of person, performing scan.")
-        self.play_music_with_fade_in(self.waiting_music)
-        scan_speed = 0.2
-        scan_range = math.pi / 4  
-        scan_duration = scan_range / scan_speed 
+    #Perofrm idle rotation in a 90 degree arch to locate person (THIS IS CURRENTLY DISABED)
+    # def perform_camera_scan(self):
+    #     self.speak("Lost track of person, performing scan.")
+    #     self.play_music_with_fade_in(self.waiting_music)
+    #     scan_speed = 0.2
+    #     scan_range = math.pi / 4  
+    #     scan_duration = scan_range / scan_speed 
 
-        start_time = time.time()
-        direction = 1
+    #     start_time = time.time()
+    #     direction = 1
 
-        point = 0
-        prevpoint = -1
+    #     point = 0
+    #     prevpoint = -1
 
-        while time.time() - start_time < scan_duration * 2:
-            self.twist.angular.z = direction * scan_speed
-            self.publisher_.publish(self.twist)
+    #     while time.time() - start_time < scan_duration * 2:
+    #         self.twist.angular.z = direction * scan_speed
+    #         self.publisher_.publish(self.twist)
 
-            if time.time() - start_time >= scan_duration:
-                if point == 0 and prevpoint == -1:
-                    point = 1
-                    prevpoint = 0
-                    start_time = time.time()
-                elif point == 0 and prevpoint == 1:
-                    point = -1
-                    prevpoint = 0
-                    start_time = time.time()
-                elif point == 1 and prevpoint == 0:
-                    point = 0
-                    prevpoint = 1
-                    start_time = time.time()
-                elif point == -1 and prevpoint == 0:
-                    point = 0
-                    prevpoint = -1
-                    start_time = time.time()
+    #         if time.time() - start_time >= scan_duration:
+    #             if point == 0 and prevpoint == -1:
+    #                 point = 1
+    #                 prevpoint = 0
+    #                 start_time = time.time()
+    #             elif point == 0 and prevpoint == 1:
+    #                 point = -1
+    #                 prevpoint = 0
+    #                 start_time = time.time()
+    #             elif point == 1 and prevpoint == 0:
+    #                 point = 0
+    #                 prevpoint = 1
+    #                 start_time = time.time()
+    #             elif point == -1 and prevpoint == 0:
+    #                 point = 0
+    #                 prevpoint = -1
+    #                 start_time = time.time()
 
-                if point == -1 or point == 1:
-                    direction *= -1
-                    start_time = time.time()
+    #             if point == -1 or point == 1:
+    #                 direction *= -1
+    #                 start_time = time.time()
 
-            person_detected, person_position = self.detect_person()
-            if person_detected:
-                self.get_logger().info("Person detected during scan. Aligning camera forward.")
-                self.fade_out_and_stop_music()
-                self.twist.angular.z = 0.0
-                self.publisher_.publish(self.twist)
-                return
+    #         person_detected, person_position = self.detect_person()
+    #         if person_detected:
+    #             self.get_logger().info("Person detected during scan. Aligning camera forward.")
+    #             self.fade_out_and_stop_music()
+    #             self.twist.angular.z = 0.0
+    #             self.publisher_.publish(self.twist)
+    #             return
 
-            time.sleep(0.1)
+    #         time.sleep(0.1)
 
-        self.twist.angular.z = 0.0
-        self.publisher_.publish(self.twist)
+    #     self.twist.angular.z = 0.0
+    #     self.publisher_.publish(self.twist)
 
-    #OpenCV upper body person detection 
-    def detect_person(self):
-        if self.current_frame is None:
-            return False, None
+    # #OpenCV upper body person detection (THIS IS CURRENTLY DISABED)
+    # def detect_person(self):
+    #     if self.current_frame is None:
+    #         return False, None
 
-        gray = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        gray = cv2.equalizeHist(gray)
+    #     gray = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2GRAY)
+    #     gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    #     gray = cv2.equalizeHist(gray)
 
-        upper_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_upperbody.xml")
+    #     upper_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_upperbody.xml")
 
-        persons = upper_body_cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.05,
-            minNeighbors=3,
-            minSize=(100, 100)
-        )
+    #     persons = upper_body_cascade.detectMultiScale(
+    #         gray,
+    #         scaleFactor=1.05,
+    #         minNeighbors=3,
+    #         minSize=(100, 100)
+    #     )
 
-        largest_person = None
-        max_area = 0
-        for (x, y, w, h) in persons:
-            area = w * h
-            if area > max_area:
-                max_area = area
-                largest_person = (x, y, w, h)
+    #     largest_person = None
+    #     max_area = 0
+    #     for (x, y, w, h) in persons:
+    #         area = w * h
+    #         if area > max_area:
+    #             max_area = area
+    #             largest_person = (x, y, w, h)
 
-        if largest_person:
-            x, y, w, h = largest_person
-            center_x = x + w / 2
-            angular_offset = (center_x - self.current_frame.shape[1] / 2) / self.current_frame.shape[1]
-            return True, {"angular_offset": angular_offset, "width": w, "height": h}
+    #     if largest_person:
+    #         x, y, w, h = largest_person
+    #         center_x = x + w / 2
+    #         angular_offset = (center_x - self.current_frame.shape[1] / 2) / self.current_frame.shape[1]
+    #         return True, {"angular_offset": angular_offset, "width": w, "height": h}
 
-        return False, None
+    #     return False, None
 
-    #Follow person based on frame information, goal is to increase bounding box size of the detected person to a certain value
-    def adjust_velocity_to_follow(self, person_position):
-        desired_box_size = 900  
-        box_width = person_position["width"]
-        box_height = person_position["height"]
-        angular_offset = person_position["angular_offset"]
+    #Follow person based on frame information, goal is to increase bounding box size of the detected person to a certain value (THIS IS CURRENTLY DISABED)
+    # def adjust_velocity_to_follow(self, person_position):
+    #     desired_box_size = 900  
+    #     box_width = person_position["width"]
+    #     box_height = person_position["height"]
+    #     angular_offset = person_position["angular_offset"]
 
-        center_threshold = 0.05
+    #     center_threshold = 0.05
 
-        if box_width < desired_box_size or box_height < desired_box_size:
-            self.get_logger().info("Box too small, moving closer.")
-            self.twist.linear.x = 0.5  
-        else:
-            self.twist.linear.x = 0.0  
+    #     if box_width < desired_box_size or box_height < desired_box_size:
+    #         self.get_logger().info("Box too small, moving closer.")
+    #         self.twist.linear.x = 0.5  
+    #     else:
+    #         self.twist.linear.x = 0.0  
 
-        if abs(angular_offset) > center_threshold:
-            self.twist.angular.z = angular_offset * -15.0  
-            self.get_logger().info(f"Turning: angular offset {angular_offset}")
-        else:
-            self.twist.angular.z = 0.0  
+    #     if abs(angular_offset) > center_threshold:
+    #         self.twist.angular.z = angular_offset * -15.0  
+    #         self.get_logger().info(f"Turning: angular offset {angular_offset}")
+    #     else:
+    #         self.twist.angular.z = 0.0  
 
-        self.publisher_.publish(self.twist)
+    #     self.publisher_.publish(self.twist)
 
     #Movement halt
     def stop_movement(self):
@@ -541,3 +541,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
