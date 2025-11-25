@@ -32,11 +32,19 @@ import threading
 from threading import Lock
 from std_msgs.msg import String
 from queue import Queue
+from datetime import datetime
 
 #VISION
 import cv2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+
+#COMPANION APP
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+
 
 @contextmanager
 def ignore_stderr():
@@ -67,6 +75,9 @@ def get_respeaker_device_id():
                 device_id = i
 
     return device_id
+
+ACTIONS = []
+actions_lock = Lock()
 
 class VoiceControlNode(Node):
     def __init__(self):
@@ -122,6 +133,10 @@ class VoiceControlNode(Node):
         self.music_volume = 0.5  
         self.speaking = False
 
+        #Companion App
+        self.actions = []
+        self.actionnum = 0
+
         try:
             pygame.mixer.music.set_volume(0)  
         except Exception as e:
@@ -140,6 +155,34 @@ class VoiceControlNode(Node):
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         if not self.nav_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('NavigateToPose action server not available.')
+
+    def add_action(self, task):
+        self.actions = self.actions + [
+            {
+                "id" : self.actionnum + 1,
+                "name" : str(task),
+                "status" : "{len(self.actions)} +  in queue",
+                "started_at" : None,
+            }
+        ]
+        print(self.actions)
+        self.sync_actions_for_http()
+
+    def update_action(self):
+        del self.actions[0]
+        for i in self.actions:
+            i = [{
+            "id" : i["id"] - 1,
+            "name" : i["name"],
+            "status" : "ongoing" if(i["id"] - 1) == 1 else "{len(actions)} +  in queue",
+            "started_at" : datetime.datetime.now() if(i["id"] - 1) == 1 else None
+            }]
+        self.sync_actions_for_http()
+
+    def sync_actions_for_http(self):
+        global ACTIONS 
+        with actions_lock:
+            ACTIONS = [dict(a) for a in self.actions]
 
     #Load map from default file
     def load_map(self):
@@ -210,29 +253,10 @@ class VoiceControlNode(Node):
         subcommands = self.command_interpretation(command)
         subcommands = subcommands.split(" then ")
         for subcommand in subcommands:
-            subcommand = subcommand.strip()  
-            if "stop" in subcommand:
-                self.stop_all_tasks()
-            elif "go" in subcommand and "kitchen" in subcommand:
-                self.add_task_to_queue(("go", "kitchen"))
-            elif "go" in subcommand and "livingroom" in subcommand:
-                self.add_task_to_queue(("go", "livingroom"))
-            elif "go" in subcommand and "bedroom" in subcommand:
-                self.add_task_to_queue(("go", "bedroom"))
-            elif "wait" in subcommand and "kitchen" in subcommand:
-                self.add_task_to_queue(("wait", "kitchen"))
-            elif "wait" in subcommand and "livingroom" in subcommand:
-                self.add_task_to_queue(("wait", "livingroom"))
-            elif "wait" in subcommand and "bedroom" in subcommand:
-                self.add_task_to_queue(("wait", "bedroom"))
-            elif "follow" in subcommand and "kitchen" in subcommand:
-                self.add_task_to_queue(("follow", "kitchen"))
-            elif "follow" in subcommand and "livingroom" in subcommand:
-                self.add_task_to_queue(("follow", "livingroom"))
-            elif "follow" in subcommand and "bedroom" in subcommand:
-                self.add_task_to_queue(("follow", "bedroom"))
-            else:
-                self.speak("I dont think I got that, could you say that again?")
+            targets = subcommand.split(",")
+            if len(targets) > 2:
+                self.speak("I dont think I got that, could you say that again?") 
+            self.add_task_to_queue((targets[0], targets[1]))
 
     #Voice command interpretation
     def command_interpretation(self, command):
@@ -268,6 +292,7 @@ class VoiceControlNode(Node):
     #Addition of current task to the task queue
     def add_task_to_queue(self, task):
         self.task_queue.put(task)
+        self.add_action(task)
         print(list(self.task_queue.queue))
         # self.speak("Task added to the queue.")
 
@@ -540,6 +565,7 @@ class VoiceControlNode(Node):
         else:
             self.get_logger().info('Navigation goal failed.')
             self.speak(f"I could not reach the {self.destination}.")
+        self.update_action()
         self.is_navigating = False
         self.current_goal_handle = None
 
@@ -568,8 +594,8 @@ class VoiceControlNode(Node):
                 play = sa.play_buffer(raw, num_channels=1, bytes_per_sample=2, sample_rate=22050)
                 play.wait_done()
 
-            # del audio
-            # mp3_fp.close()
+            del audio
+            mp3_fp.close()
 
             # with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
             #     temp_audio_path = temp_audio_file.name
@@ -580,9 +606,39 @@ class VoiceControlNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error during TTS or playback: {e}')
 
+def create_app() -> FastAPI:
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/actions")
+    def get_actions():
+        with actions_lock:
+            return ACTIONS
+    
+    # def root():
+    #     return {"status": "ok", "routes": [route.path for route in app.routes]}
+
+    return app
+
+def start_http_server():
+    app = create_app()
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    server.run()
+
 def main(args=None):
     rclpy.init(args=args)
     node = VoiceControlNode()
+
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    node.get_logger().info("HTTP /actions server started on 0.0.0.0:8000")
 
     try:
         rclpy.spin(node)
@@ -593,5 +649,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
-
